@@ -1,0 +1,56 @@
+# Implementation Plan
+
+- [x] 1. Fundaciones de gobernanza
+- [x] 1.1 (P) Token de votos con suministro fijo
+  - Token ERC20 con permit y votos delegables, todo el suministro emitido al receptor en el despliegue.
+  - Rechazo explícito del receptor dirección cero.
+  - Observable: un holder sin delegar tiene 0 votos y, al delegarse, tiene votos iguales a su saldo.
+  - _Boundary: AgroGovToken_
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
+- [x] 1.2 (P) Governor con settings, conteo simple, quórum fraccional y timelock
+  - Composición estándar de OpenZeppelin con parámetros por constructor.
+  - Observable: el Governor compila por debajo del límite de 24 KB y expone los parámetros configurados.
+  - _Boundary: AgroGovernor_
+  - _Requirements: 2.1, 2.2_
+
+- [x] 2. Despliegue y traspaso de roles
+- [x] 2.1 Script de despliegue parametrizado
+  - Lectura de parámetros desde el entorno con defaults para Sepolia; reutilización opcional del proxy.
+  - Timelock con ejecución abierta y Governor como proposer y canceller.
+  - Observable: en anvil, el script imprime las cuatro direcciones y termina sin revertir.
+  - _Requirements: 3.1, 3.2, 3.4, 6.1, 6.2, 6.3_
+- [x] 2.2 Traspaso y verificación de post-condiciones
+  - El Timelock recibe admin y upgrader de AgroTrace; el deployer renuncia a todo, también al admin del Timelock.
+  - Observable: el script revierte si alguna post-condición no se cumple; tras correrlo, el deployer no tiene ningún rol.
+  - _Requirements: 3.5, 4.1, 4.2, 4.4_
+
+- [x] 3. Operación vía gobernanza
+- [x] 3.1 Script de propuesta de upgrade en tres pasos
+  - Propuesta con una acción de upgrade; queue y execute reconstruyen la propuesta con la misma descripción.
+  - Observable: en anvil, la versión del proxy pasa de 1.0.0 a 2.0.0 después de execute.
+  - _Requirements: 5.1, 5.4_
+
+- [x] 4. Validación
+- [x] 4.1 Tests de traspaso y accesos directos
+  - Ex-admin y holder mayoritario no pueden hacer upgrade ni dar roles; una EOA no puede programar en el Timelock.
+  - Observable: los tests de rechazo pasan con el error de AccessControl esperado.
+  - _Requirements: 4.1, 4.3, 3.1_
+- [x] 4.2 Test del ciclo de vida completo con upgrade
+  - Propuesta con upgrade a la V2 de prueba y uso de su función nueva en la misma ejecución.
+  - Observable: después de execute la versión es 2.0.0 y el lote, los roles y el contador no cambiaron.
+  - _Requirements: 2.6, 3.4, 5.1, 5.3_
+- [x] 4.3 Tests de roles operativos vía DAO
+  - Alta y baja de un productor mediante propuestas.
+  - Observable: el rol aparece o desaparece solo después de la ejecución.
+  - _Requirements: 5.2_
+- [x] 4.4 Tests de casos de error de votación y demora
+  - Sin quórum, mayoría en contra, queue anticipado, execute antes de la demora, doble voto, votos posteriores al snapshot.
+  - Observable: cada caso revierte o queda Defeated, y AgroTrace no cambia.
+  - _Requirements: 2.3, 2.4, 2.5, 2.7, 3.3, 6.4_
+- [x] 4.5 Test del script de despliegue
+  - Ejecutar el script dentro de la suite con variables de entorno y verificar parámetros y roles.
+  - Observable: el test confirma voting period, demora del timelock y que el deployer no conserva roles.
+  - _Requirements: 4.2, 6.1_
+- [x] 4.6 Regresión de la suite existente
+  - Observable: los 39 tests previos de AgroTrace pasan sin cambios.
+  - _Requirements: 6.4_

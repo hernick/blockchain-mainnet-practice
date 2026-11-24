@@ -10,6 +10,8 @@ Productor → Acopiador → Procesador → Distribuidor → Minorista
 ```
 
 Hecho con **Foundry** y **OpenZeppelin Contracts Upgradeable v5** (proxy **UUPS** + storage **ERC-7201**).
+Los permisos de admin y de upgrade los tiene una **DAO**: token de votos `AGT` + `AgroGovernor` +
+`TimelockController`. El proceso de desarrollo se gobierna con **Hermes Kanban** y specs **hermes-sdd**.
 
 > Es un esqueleto pensado para clonar, entender, completar y probar. Prioriza claridad y buenas prácticas
 > por sobre funcionalidad extra.
@@ -26,8 +28,10 @@ Hecho con **Foundry** y **OpenZeppelin Contracts Upgradeable v5** (proxy **UUPS*
 6. [Tests y gas report](#tests-y-gas-report)
 7. [Deploy en Sepolia y verificación en Etherscan](#deploy-en-sepolia-y-verificación-en-etherscan)
 8. [Upgrades](#upgrades)
-9. [Interacción con ethers.js (opcional)](#interacción-con-ethersjs-opcional)
-10. [Próximos pasos (ruta de práctica)](#próximos-pasos-ruta-de-práctica)
+9. [Gobernanza on-chain (DAO + Timelock)](#gobernanza-on-chain-dao--timelock)
+10. [Gobernanza del proceso (Hermes Kanban + hermes-sdd)](#gobernanza-del-proceso-hermes-kanban--hermes-sdd)
+11. [Interacción con ethers.js (opcional)](#interacción-con-ethersjs-opcional)
+12. [Próximos pasos (ruta de práctica)](#próximos-pasos-ruta-de-práctica)
 
 ---
 
@@ -36,14 +40,25 @@ Hecho con **Foundry** y **OpenZeppelin Contracts Upgradeable v5** (proxy **UUPS*
 ```
 agro-trace/
 ├── src/
-│   └── AgroTrace.sol              # Contrato principal (implementación UUPS)
+│   ├── AgroTrace.sol              # Contrato principal (implementación UUPS)
+│   └── governance/
+│       ├── AgroGovToken.sol       # Token de votos AGT (ERC20Votes + ERC20Permit, suministro fijo)
+│       └── AgroGovernor.sol       # Governor OZ 5 + Settings/Counting/Votes/Quorum/TimelockControl
 ├── test/
-│   ├── AgroTrace.t.sol            # Tests Foundry (39 tests: happy path, accesos, edge cases, upgrades)
+│   ├── AgroTrace.t.sol            # 39 tests: happy path, accesos, edge cases, upgrades
+│   ├── AgroGovernance.t.sol       # 17 tests: traspaso de roles, propose→vote→queue→execute, errores
 │   └── mocks/
 │       └── AgroTraceV2Mock.sol    # V2 de ejemplo para probar que el upgrade preserva el estado
 ├── script/
-│   ├── DeployAgroTrace.s.sol      # Despliega implementación + ERC1967Proxy (Sepolia)
-│   └── UpgradeAgroTrace.s.sol     # Despliega nueva implementación y hace upgradeToAndCall
+│   ├── DeployAgroTrace.s.sol      # Despliega implementación + ERC1967Proxy (admin = wallet)
+│   ├── DeployGovernance.s.sol     # Token + Timelock + Governor y traspaso de roles a la DAO
+│   ├── ProposeUpgrade.s.sol       # Upgrade vía DAO: propose / queue / execute
+│   └── UpgradeAgroTrace.s.sol     # Upgrade directo (solo ANTES del traspaso a la DAO)
+├── .kiro/                         # Spec-driven development (hermes-sdd / cc-sdd)
+│   ├── steering/                  # product.md, tech.md, structure.md
+│   └── specs/agro-governance/     # spec.json, requirements.md (EARS), design.md, tasks.md
+├── docs/
+│   └── hermes-kanban.md           # Flujo de trabajo con Hermes Kanban → propuesta on-chain
 ├── examples/
 │   ├── interact.mjs               # Ejemplo mínimo con ethers.js v6
 │   └── package.json
@@ -62,8 +77,13 @@ agro-trace/
 
 ```mermaid
 flowchart LR
+    subgraph Gobernanza
+        H[Holders AGT<br/>propose / castVote]
+        G[AgroGovernor]
+        A[TimelockController<br/>DEFAULT_ADMIN_ROLE<br/>UPGRADER_ROLE]
+    end
+
     subgraph Usuarios
-        A[Admin / Multisig<br/>DEFAULT_ADMIN_ROLE<br/>UPGRADER_ROLE]
         P[Productor<br/>PRODUCER_ROLE]
         C[Acopiador<br/>COLLECTOR_ROLE]
         PR[Procesador<br/>PROCESSOR_ROLE]
@@ -82,7 +102,9 @@ flowchart LR
         IDX[Indexador / dApp<br/>lee eventos]
     end
 
-    A -- grantRole / upgradeToAndCall --> X
+    H --> G
+    G -- queue / execute --> A
+    A -- grantRole / upgradeToAndCall<br/>tras votación + demora --> X
     P -- registerLot / updateLot --> X
     P & C & PR & D -- transferCustody --> X
     X -. delegatecall .-> I1
@@ -144,8 +166,8 @@ stateDiagram-v2
 
 | Rol | Puede |
 |-----|-------|
-| `DEFAULT_ADMIN_ROLE` | Otorgar/revocar todos los roles |
-| `UPGRADER_ROLE` | Autorizar upgrades (`upgradeToAndCall`) |
+| `DEFAULT_ADMIN_ROLE` | Otorgar/revocar todos los roles. **Lo tiene solo el Timelock** después de `DeployGovernance` |
+| `UPGRADER_ROLE` | Autorizar upgrades (`upgradeToAndCall`). **Lo tiene solo el Timelock** |
 | `PRODUCER_ROLE` | `registerLot`; `updateLot` solo de **sus** lotes y **antes** de la primera transferencia |
 | `COLLECTOR_ROLE` / `PROCESSOR_ROLE` / `DISTRIBUTOR_ROLE` / `RETAILER_ROLE` | Recibir el lote en esa etapa |
 
@@ -232,7 +254,9 @@ forge inspect AgroTrace storageLayout   # layout de storage (clave para upgrades
 FOUNDRY_PROFILE=ci forge test           # fuzzing con 5000 corridas
 ```
 
-Cobertura de los 39 tests (`test/AgroTrace.t.sol`):
+**56 tests** en total: 39 de `test/AgroTrace.t.sol` + 17 de `test/AgroGovernance.t.sol`.
+
+Cobertura de `test/AgroTrace.t.sol`:
 
 - **Camino feliz**: registro con todos los datos y evento, ids incrementales, cadena completa
   productor→minorista con un evento por traspaso, `updateLot`.
@@ -247,6 +271,17 @@ Cobertura de los 39 tests (`test/AgroTrace.t.sol`):
   nueva (con su propio namespace ERC-7201) también.
 - **Packing**: test que verifica con `vm.load` que un lote ocupa exactamente 4 slots.
 - **Fuzzing**: coordenadas válidas aleatorias.
+
+Cobertura de `test/AgroGovernance.t.sol`:
+
+- **Traspaso**: el Timelock tiene admin y upgrader; el deployer no conserva ningún rol (ni en AgroTrace ni
+  en el Timelock); el Governor es proposer/canceller y la ejecución es abierta.
+- **Ciclo completo**: propose → vote → queue → execute de un upgrade a `AgroTraceV2Mock` + `setNote` en la
+  misma propuesta; el lote, los roles y la dirección se conservan. También alta y baja de un productor vía DAO.
+- **Rechazos**: upgrade o `grantRole` directo del ex-admin o de un holder con el 60% de los votos; `schedule`
+  directo en el Timelock; propuesta sin quórum; mayoría en contra; `queue` antes de terminar la votación;
+  `execute` antes de la demora (inmediato y 1 s antes); doble voto; votos transferidos después del snapshot.
+- **Script**: `DeployGovernance.run()` ejecutado dentro del test con variables de entorno.
 
 ### Referencia de gas (medido en anvil, tx completa vía proxy)
 
@@ -330,6 +365,9 @@ Así aparecen las pestañas **Read as Proxy / Write as Proxy** con la ABI de Agr
 
 ### 5. Primeras interacciones con `cast`
 
+> Estos `cast send` con la wallet admin funcionan **antes** de pasar a gobernanza. Después de
+> `DeployGovernance`, dar roles requiere una propuesta (ver [Gobernanza on-chain](#gobernanza-on-chain-dao--timelock)).
+
 ```bash
 # Dar rol de productor
 cast send $PROXY "grantRole(bytes32,address)" $(cast keccak PRODUCER_ROLE) $ADMIN \
@@ -349,6 +387,10 @@ cast call $PROXY "getLot(uint256)((address,uint64,uint16,uint8,address,int32,int
 
 ## Upgrades
 
+> Después del traspaso a la DAO, el paso 4 se reemplaza por `script/ProposeUpgrade.s.sol`
+> (ver [Gobernanza on-chain](#gobernanza-on-chain-dao--timelock)): ninguna wallet puede llamar
+> `upgradeToAndCall` directo.
+
 1. Creá `src/AgroTraceV2.sol` heredando de `AgroTrace` (o copiándolo) y respetando el layout de storage.
    Usá `test/mocks/AgroTraceV2Mock.sol` como modelo.
 2. Escribí un test como `test_Upgrade_PreservesState` para la V2 real.
@@ -361,6 +403,189 @@ cast call $PROXY "getLot(uint256)((address,uint64,uint16,uint8,address,int32,int
 ```bash
 PROXY_ADDRESS=0x... forge script script/UpgradeAgroTrace.s.sol:UpgradeAgroTrace \
   --rpc-url sepolia --broadcast --verify -vvvv
+```
+
+---
+
+## Gobernanza on-chain (DAO + Timelock)
+
+### Componentes
+
+```mermaid
+flowchart LR
+    H[Holders AGT] -- delegate --> T[AgroGovToken<br/>ERC20Votes + Permit]
+    H -- propose / castVote --> G[AgroGovernor]
+    T -- getPastVotes snapshot --> G
+    G -- queue: scheduleBatch --> TL[TimelockController<br/>minDelay]
+    ANY[Cualquier cuenta] -- execute --> G
+    G -- executeBatch --> TL
+    TL -- DEFAULT_ADMIN_ROLE + UPGRADER_ROLE --> P[AgroTrace proxy]
+```
+
+| Contrato | Qué es | Notas |
+|----------|--------|-------|
+| `AgroGovToken` (AGT) | ERC20 + `ERC20Votes` + `ERC20Permit` | Suministro fijo emitido en el constructor, sin `mint`. **Hay que delegar** (`delegate(self)`) para que el saldo cuente como voto. |
+| `AgroGovernor` | `Governor` + `GovernorSettings` + `GovernorCountingSimple` + `GovernorVotes` + `GovernorVotesQuorumFraction` + `GovernorTimelockControl` | No upgradeable. Votos a favor / en contra / abstención; la abstención suma al quórum. |
+| `TimelockController` | Contrato estándar de OZ | Proposer y canceller: el Governor. Executor: `address(0)` (cualquiera ejecuta lo aprobado). Se administra a sí mismo. |
+
+### Parámetros (variables de entorno de `DeployGovernance`)
+
+| Variable | Default | Significado |
+|----------|---------|-------------|
+| `VOTING_DELAY` | `1` bloque | Espera entre `propose` y el snapshot de votos |
+| `VOTING_PERIOD` | `50400` bloques | ≈ 7 días con bloques de 12 s. Para demos en Sepolia, por ejemplo `300` (≈ 1 h) |
+| `PROPOSAL_THRESHOLD` | `0` | Votos mínimos para proponer (wei de AGT) |
+| `QUORUM_PERCENT` | `4` | % del suministro total en el snapshot |
+| `TIMELOCK_MIN_DELAY` | `86400` s | 1 día entre `queue` y `execute` |
+| `TOKEN_SUPPLY` | `1000000e18` | 1.000.000 AGT |
+| `TOKEN_RECIPIENT` | deployer | Quién recibe los AGT (si es el deployer, el script lo auto-delega) |
+| `PROXY_ADDRESS` | vacío | Proxy existente a traspasar; si está vacío se despliega un AgroTrace nuevo |
+
+Con 1.000.000 AGT y 4%, el quórum es **40.000 AGT** (a favor + abstención).
+
+### Deploy y traspaso de roles
+
+```bash
+source .env
+# Simulación
+forge script script/DeployGovernance.s.sol:DeployGovernance --rpc-url sepolia -vvvv
+# Deploy real + verificación (opcional: PROXY_ADDRESS=0x... para reutilizar un AgroTrace ya desplegado)
+VOTING_PERIOD=300 forge script script/DeployGovernance.s.sol:DeployGovernance \
+  --rpc-url sepolia --broadcast --verify -vvvv
+```
+
+El script, en un solo broadcast:
+
+1. Despliega AgroTrace (o usa `PROXY_ADDRESS`, si el deployer es su admin).
+2. Despliega `AgroGovToken` y auto-delega si el receptor es el deployer.
+3. Despliega `TimelockController` con el deployer como admin **temporal**.
+4. Despliega `AgroGovernor` y le da `PROPOSER_ROLE` y `CANCELLER_ROLE` en el Timelock.
+5. Le da al Timelock `DEFAULT_ADMIN_ROLE` y `UPGRADER_ROLE` de AgroTrace.
+6. El deployer **renuncia** a esos dos roles y al admin del Timelock.
+7. Verifica las post-condiciones y revierte si algo no cuadra.
+
+> Si querés dar de alta productores u otros roles **sin** pasar por una votación, hacelo con
+> `DeployAgroTrace` + `cast send grantRole` **antes** de correr `DeployGovernance` con `PROXY_ADDRESS`.
+> Después del traspaso, todo cambio de roles es una propuesta.
+
+### Upgrade a través de la DAO
+
+```bash
+export GOVERNOR_ADDRESS=0x... PROXY_ADDRESS=0x...
+
+# 1) Desplegar la nueva implementación y proponer (o pasar NEW_IMPLEMENTATION=0x... si ya existe)
+forge script script/ProposeUpgrade.s.sol:ProposeUpgrade --rpc-url sepolia --broadcast
+#    -> imprime NEW_IMPLEMENTATION, proposalId y los bloques de votación
+
+# 2) Votar después de VOTING_DELAY bloques (1 = a favor, 0 = en contra, 2 = abstención)
+cast send $GOVERNOR_ADDRESS "castVote(uint256,uint8)" $PROPOSAL_ID 1 \
+  --rpc-url sepolia --private-key $PRIVATE_KEY
+cast call $GOVERNOR_ADDRESS "state(uint256)(uint8)" $PROPOSAL_ID --rpc-url sepolia
+#    0 Pending · 1 Active · 2 Canceled · 3 Defeated · 4 Succeeded · 5 Queued · 6 Expired · 7 Executed
+
+# 3) Cuando termina la votación (state = 4), encolar en el Timelock
+NEW_IMPLEMENTATION=0x... forge script script/ProposeUpgrade.s.sol:ProposeUpgrade \
+  --sig "queue()" --rpc-url sepolia --broadcast
+
+# 4) Pasado TIMELOCK_MIN_DELAY, ejecutar (lo puede hacer cualquiera)
+NEW_IMPLEMENTATION=0x... forge script script/ProposeUpgrade.s.sol:ProposeUpgrade \
+  --sig "execute()" --rpc-url sepolia --broadcast
+```
+
+`PROPOSAL_DESCRIPTION` (default `AGP-1: upgrade de la implementacion de AgroTrace`) tiene que ser la misma
+en los tres pasos, porque su hash forma parte del `proposalId`.
+
+**Dar un rol operativo vía DAO** (ej. alta de un productor): la propuesta es una llamada a
+`grantRole(PRODUCER_ROLE, cuenta)` sobre el proxy. Con `cast`:
+
+```bash
+CALLDATA=$(cast calldata "grantRole(bytes32,address)" $(cast keccak PRODUCER_ROLE) 0xPRODUCTOR)
+DESC="AGP-2: alta de productor"
+cast send $GOVERNOR_ADDRESS "propose(address[],uint256[],bytes[],string)" \
+  "[$PROXY_ADDRESS]" "[0]" "[$CALLDATA]" "$DESC" --rpc-url sepolia --private-key $PRIVATE_KEY
+# proposalId para votar:
+cast call $GOVERNOR_ADDRESS "getProposalId(address[],uint256[],bytes[],bytes32)(uint256)" \
+  "[$PROXY_ADDRESS]" "[0]" "[$CALLDATA]" $(cast keccak "$DESC") --rpc-url sepolia
+# ... votar, y luego queue / execute con el hash de la descripción:
+cast send $GOVERNOR_ADDRESS "queue(address[],uint256[],bytes[],bytes32)" \
+  "[$PROXY_ADDRESS]" "[0]" "[$CALLDATA]" $(cast keccak "$DESC") --rpc-url sepolia --private-key $PRIVATE_KEY
+cast send $GOVERNOR_ADDRESS "execute(address[],uint256[],bytes[],bytes32)" \
+  "[$PROXY_ADDRESS]" "[0]" "[$CALLDATA]" $(cast keccak "$DESC") --rpc-url sepolia --private-key $PRIVATE_KEY
+```
+
+### Prueba end-to-end en anvil
+
+Probado con Foundry 1.10.0 (deploy → upgrade directo rechazado → propose → vote → queue → execute antes de
+tiempo rechazado → execute OK → `version()` = `2.0.0`):
+
+```bash
+anvil   # en otra terminal
+export RPC=http://127.0.0.1:8545
+export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80   # cuenta #0 de anvil
+
+VOTING_PERIOD=5 TIMELOCK_MIN_DELAY=60 forge script script/DeployGovernance.s.sol:DeployGovernance \
+  --rpc-url $RPC --broadcast
+export PROXY_ADDRESS=0x... GOVERNOR_ADDRESS=0x...   # de la salida del script
+
+# Nueva implementación (acá, la V2 de prueba)
+export NEW_IMPLEMENTATION=$(forge create test/mocks/AgroTraceV2Mock.sol:AgroTraceV2Mock \
+  --rpc-url $RPC --private-key $PRIVATE_KEY --broadcast | awk '/Deployed to/ {print $3}')
+
+forge script script/ProposeUpgrade.s.sol:ProposeUpgrade --rpc-url $RPC --broadcast   # anotar proposalId
+cast rpc anvil_mine 2 --rpc-url $RPC                                                  # pasar votingDelay
+cast send $GOVERNOR_ADDRESS "castVote(uint256,uint8)" $PROPOSAL_ID 1 --rpc-url $RPC --private-key $PRIVATE_KEY
+cast rpc anvil_mine 6 --rpc-url $RPC                                                  # terminar la votación
+forge script script/ProposeUpgrade.s.sol:ProposeUpgrade --sig "queue()" --rpc-url $RPC --broadcast
+cast rpc evm_increaseTime 61 --rpc-url $RPC && cast rpc anvil_mine 1 --rpc-url $RPC   # pasar la demora
+forge script script/ProposeUpgrade.s.sol:ProposeUpgrade --sig "execute()" --rpc-url $RPC --broadcast
+cast call $PROXY_ADDRESS "version()(string)" --rpc-url $RPC                           # "2.0.0"
+```
+
+### Alternativa: Safe multisig como proposer
+
+Para un equipo chico (o mientras AGT no está distribuido), una **Safe** puede reemplazar o complementar al
+Governor sin tocar AgroTrace, porque AgroTrace solo ve al Timelock:
+
+- **Safe en lugar del Governor**: desplegar el `TimelockController` con `proposers = [safe]` (la Safe recibe
+  también `CANCELLER_ROLE`) y `executors = [address(0)]` o `[safe]`. Cada cambio es una tx de la Safe a
+  `timelock.schedule(...)` con M-de-N firmas y, pasada la demora, `timelock.execute(...)`. Se conserva la
+  demora visible y se pierde el voto abierto.
+- **Safe como guardián, además de la DAO**: darle a la Safe solo `CANCELLER_ROLE` en el Timelock, para que
+  pueda frenar una propuesta maliciosa durante la demora (por ejemplo, si alguien compra votos).
+- **Migración**: pasar de Safe a Governor (o al revés) es una operación del propio Timelock:
+  `grantRole(PROPOSER_ROLE, nuevo)` + `revokeRole(PROPOSER_ROLE, viejo)` programados con la demora.
+
+### Consideraciones de seguridad
+
+- **Centralización real**: con todo el suministro en el deployer, la "DAO" es una sola wallet hasta que se
+  distribuya AGT. Para la defensa conviene repartir tokens entre varias cuentas de prueba (o usar la Safe).
+- **Quórum 4% y threshold 0** son valores de testnet. En mainnet: quórum más alto, `proposalThreshold` > 0
+  y `VOTING_PERIOD` y demoras más largos.
+- **Flash loans**: los votos se leen en el bloque del snapshot (pasado), así que comprar tokens después de
+  proponer no da votos (hay un test para eso).
+- **Proxy reutilizado**: `AccessControl` no es enumerable; si el proxy tenía otros admins además del
+  deployer, revocalos con una propuesta.
+- **Upgrade del propio Governor**: no es upgradeable; para cambiarlo, la DAO le da `PROPOSER_ROLE` a un
+  Governor nuevo con una propuesta. Los parámetros de votación sí se cambian por propuesta
+  (`setVotingPeriod`, `setVotingDelay`, `setProposalThreshold`, `updateQuorumNumerator`).
+
+---
+
+## Gobernanza del proceso (Hermes Kanban + hermes-sdd)
+
+La gobernanza on-chain controla **quién** puede cambiar el contrato. La del proceso controla **cómo** se
+decide y revisa cada cambio antes de llegar a una propuesta. Está documentada en:
+
+- [`docs/hermes-kanban.md`](docs/hermes-kanban.md): flujo triage → `hermes kanban specify` → todo → workers
+  `implementer`, `auditor` y `gas-optimizer` → `request_review` / `request_changes` → aprobación humana →
+  propuesta `AGP-n` en el Governor, con comandos de ejemplo y diagrama.
+- [`.kiro/steering/`](.kiro/steering/): memoria del proyecto (producto, stack, estructura) según
+  [hermes-sdd](https://github.com/BarryYin/Hermes-sdd) / [cc-sdd](https://github.com/gotalab/cc-sdd).
+- [`.kiro/specs/agro-governance/`](.kiro/specs/agro-governance/): la spec de esta feature
+  (requisitos EARS → diseño con trazabilidad a tests → tareas).
+
+```
+idea ─▶ Kanban triage ─▶ spec (.kiro) ─▶ implementer ─▶ auditor / gas-optimizer ─▶ humano ─▶ AGP-n on-chain ─▶ Timelock ─▶ upgrade
 ```
 
 ---
@@ -413,7 +638,7 @@ Alineados con `ruta-practica-ethereum.md` de
    recorrer la cadena completa con 5 wallets distintas (una por rol).
 3. **Interacción con ethers.js** — partir de `examples/interact.mjs`; armar una mini dApp que muestre el
    historial de un lote (por ejemplo, leyendo un QR con el `lotId`).
-4. **Mainnet con montos chicos** — usar una **multisig (Safe)** como admin y `UPGRADER_ROLE`, keystore cifrado
+4. **Mainnet con montos chicos** — usar la DAO (o una **Safe** como proposer del Timelock) como admin y `UPGRADER_ROLE`, keystore cifrado
    en vez de `PRIVATE_KEY` en `.env`, y simular primero con `--fork-url`. Costo de referencia: ~1.94 M gas
    de deploy.
 5. **Auditoría estilo Code4rena** — correr `slither .` y `aderyn`, escribir tests de invariantes

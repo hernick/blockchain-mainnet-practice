@@ -8,7 +8,9 @@ import {AgroTrace} from "../src/AgroTrace.sol";
 /// @notice Reemplazá `new AgroTrace()` por tu versión nueva (ej: AgroTraceV2) antes de correrlo.
 ///   source .env
 ///   forge script script/UpgradeAgroTrace.s.sol:UpgradeAgroTrace --rpc-url sepolia --broadcast --verify -vvvv
-/// @dev La wallet de PRIVATE_KEY debe tener UPGRADER_ROLE. Antes de un upgrade real, validá el layout de
+/// @dev SOLO sirve ANTES de pasar a gobernanza: después de DeployGovernance el único UPGRADER_ROLE es el
+///      Timelock y este script revierte; usá script/ProposeUpgrade.s.sol.
+///      La wallet de PRIVATE_KEY debe tener UPGRADER_ROLE. Antes de un upgrade real, validá el layout de
 ///      storage (ver README: openzeppelin-foundry-upgrades o `forge inspect ... storageLayout`).
 contract UpgradeAgroTrace is Script {
     function run() external returns (address newImplementation) {
