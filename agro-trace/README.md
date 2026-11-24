@@ -62,7 +62,6 @@ agro-trace/
 ├── examples/
 │   ├── interact.mjs               # Ejemplo mínimo con ethers.js v6
 │   └── package.json
-├── .github/workflows/test.yml     # CI: fmt + build + test en cada push (GitHub Actions)
 ├── foundry.toml                   # Compilador, optimizer, RPC y Etherscan
 ├── remappings.txt
 ├── .env.example                   # SEPOLIA_RPC_URL, PRIVATE_KEY, ETHERSCAN_API_KEY
@@ -70,6 +69,8 @@ agro-trace/
 ```
 
 `lib/` (dependencias), `out/` y `cache/` **no se incluyen**: se regeneran con `forge install` y `forge build`.
+
+El CI de GitHub Actions está en la **raíz del repo** (`.github/workflows/agro-trace.yml`), no dentro de `agro-trace/`. Así Actions lo corre en cada push o pull request que toque este proyecto: instala las dependencias, y ejecuta `forge fmt --check`, `forge build --sizes` y `forge test -vvv`. El resultado se ve en la pestaña **Actions** del repo.
 
 ---
 

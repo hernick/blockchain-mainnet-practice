@@ -1,0 +1,51 @@
+name: AgroTrace CI
+
+permissions: {}
+
+on:
+  push:
+    paths:
+      - "agro-trace/**"
+      - ".github/workflows/agro-trace.yml"
+  pull_request:
+    paths:
+      - "agro-trace/**"
+      - ".github/workflows/agro-trace.yml"
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: agro-trace
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge version
+        run: forge --version
+
+      # lib/ no está en el repo. agro-trace no es un git root propio (el .git está en la
+      # raíz del monorepo), así que usamos --no-git para clonar las deps en agro-trace/lib
+      # sin intentar agregar submódulos en la raíz. Equivale al `forge install` del README.
+      - name: Install dependencies
+        run: |
+          forge install --no-git foundry-rs/forge-std@v1.17.0 \
+            OpenZeppelin/openzeppelin-contracts@v5.7.0 \
+            OpenZeppelin/openzeppelin-contracts-upgradeable@v5.7.0
+
+      - name: Run Forge fmt
+        run: forge fmt --check
+
+      - name: Run Forge build
+        run: forge build --sizes
+
+      - name: Run Forge tests
+        run: forge test -vvv
