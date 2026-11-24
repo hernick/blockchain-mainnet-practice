@@ -1,0 +1,11 @@
+{
+  "name": "agro-trace-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "interact": "node interact.mjs"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0"
+  }
+}
